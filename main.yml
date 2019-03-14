@@ -1,0 +1,261 @@
+# Derived from ./sonarqube-config
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sonarqube-postgresql
+  labels:
+    app: sonarqube-postgresql
+type: Opaque
+data:
+  postgres-password:  "c29uYXJQYXNz"
+ 
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sonarqube-config
+  labels:
+    app: sonarqube
+data:
+
+ 
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sonarqube-copy-plugins
+  labels:
+    app: sonarqube
+data:
+  copy_plugins.sh: |-
+      #! /bin/sh
+      cp /opt/sonarqube/extensions/plugins/tmp/*.jar /opt/sonarqube/extensions/plugins/
+      /opt/sonarqube/bin/run.sh
+
+
+ 
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sonarqube-install-plugins
+  labels:
+    app: sonarqube
+data:
+  install_plugins.sh: |-
+    cd /opt/sonarqube/extensions/plugins/tmp
+
+ 
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: sonarqube-postgresql
+  labels:
+    app: sonarqube-postgresql
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "8Gi"
+ 
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: sonarqube-pvc
+  labels:
+    app: sonarqube
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "10Gi"        
+ 
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sonarqube-postgresql
+  labels:
+    app: sonarqube-postgresql
+spec:
+  type: ClusterIP
+  ports:
+  - name: postgresql
+    port: 5432
+    targetPort: postgresql
+  selector:
+    app: sonarqube-postgresql
+ 
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sonarqube
+  labels:
+    app: sonarqube
+
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 9000
+      targetPort: 9000
+      protocol: TCP
+      name: sonarqube
+  selector:
+    app: sonarqube
+  loadBalancerSourceRanges: [0.0.0.0/0]
+
+ 
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: sonarqube-postgresql
+  labels:
+    app: sonarqube-postgresql
+spec:
+  template:
+    metadata:
+      labels:
+        app: sonarqube-postgresql
+    spec:
+      containers:
+      - name: sonarqube-postgresql
+        image: "postgres:9.6.2"
+        imagePullPolicy: ""
+        env:
+        - name: POSTGRES_USER
+          value: "sonarUser"
+          # Required for pg_isready in the health probes.
+        - name: PGUSER
+          value: "sonarUser"
+        - name: POSTGRES_DB
+          value: "sonarDB"
+        - name: POSTGRES_INITDB_ARGS
+          value: ""
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sonarqube-postgresql
+              key: postgres-password
+        - name: POD_IP
+          valueFrom: { fieldRef: { fieldPath: status.podIP } }
+        ports:
+        - name: postgresql
+          containerPort: 5432
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - exec pg_isready --host $POD_IP
+          initialDelaySeconds: 60
+          timeoutSeconds: 5
+          failureThreshold: 6
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - exec pg_isready --host $POD_IP
+          initialDelaySeconds: 5
+          timeoutSeconds: 3
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data/pgdata
+          subPath: postgresql-db
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: sonarqube-postgresql
+          
+ 
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: sonarqube-deploy
+  labels:
+    app: sonarqube
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: sonarqube
+    spec:
+      securityContext:
+        fsGroup: 999
+
+      containers:
+        - name: sonarqube
+          image: "sonarqube:7.6-community"
+          imagePullPolicy:
+          ports:
+            - containerPort: 9000
+          env:
+            - name: SONARQUBE_JDBC_USERNAME
+              value: "sonarUser"
+            - name: SONARQUBE_JDBC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sonarqube-postgresql
+                  key: postgres-password
+            - name: SONARQUBE_JDBC_URL
+              value: "jdbc:postgresql://sonarqube-postgresql:5432/sonarDB"
+          livenessProbe:
+            httpGet:
+              path: /sessions/new
+              port: 9000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /sessions/new
+              port: 9000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 6
+          volumeMounts:
+            - mountPath: /opt/sonarqube/data
+              name: sonarqube
+              subPath: data
+            - mountPath: /opt/sonarqube/extensions/plugins/tmp
+              name: sonarqube
+              subPath: tmp
+            - name: copy-plugins
+              mountPath: /usr/local/
+          resources:
+            {}
+      volumes:
+      - name: install-plugins
+        configMap:
+          name: sonarqube-install-plugins
+          items:
+            - key: install_plugins.sh
+              path: install_plugins.sh
+      - name: copy-plugins
+        configMap:
+          name: sonarqube-copy-plugins
+          defaultMode: 0755
+          items:
+            - key: copy_plugins.sh
+              path: copy_plugins.sh
+      - name: sonarqube
+        persistentVolumeClaim:
+          claimName: sonarqube-pvc
+                  
+ 
+---

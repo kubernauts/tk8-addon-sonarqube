@@ -1,0 +1,74 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: sonarqube-deploy
+  labels:
+    app: sonarqube
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: sonarqube
+    spec:
+      securityContext:
+        fsGroup: 999
+
+      containers:
+        - name: sonarqube
+          image: "sonarqube:7.6-community"
+          imagePullPolicy:
+          ports:
+            - containerPort: 9000
+          env:
+            - name: SONARQUBE_JDBC_USERNAME
+              value: "sonarUser"
+            - name: SONARQUBE_JDBC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sonarqube-postgresql
+                  key: postgres-password
+            - name: SONARQUBE_JDBC_URL
+              value: "jdbc:postgresql://sonarqube-postgresql:5432/sonarDB"
+          livenessProbe:
+            httpGet:
+              path: /sessions/new
+              port: 9000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /sessions/new
+              port: 9000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 6
+          volumeMounts:
+            - mountPath: /opt/sonarqube/data
+              name: sonarqube
+              subPath: data
+            - mountPath: /opt/sonarqube/extensions/plugins/tmp
+              name: sonarqube
+              subPath: tmp
+            - name: copy-plugins
+              mountPath: /usr/local/
+          resources:
+            {}
+      volumes:
+      - name: install-plugins
+        configMap:
+          name: sonarqube-install-plugins
+          items:
+            - key: install_plugins.sh
+              path: install_plugins.sh
+      - name: copy-plugins
+        configMap:
+          name: sonarqube-copy-plugins
+          defaultMode: 0755
+          items:
+            - key: copy_plugins.sh
+              path: copy_plugins.sh
+      - name: sonarqube
+        persistentVolumeClaim:
+          claimName: sonarqube-pvc
+                  
